@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
-import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, LineData, CandlestickSeries, LineSeries } from 'lightweight-charts';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, LineData, CandlestickSeries, LineSeries, AreaSeries, HistogramSeries } from 'lightweight-charts';
 import { ChartType, MetricResult } from '@/lib/dungeon/types';
 import { Camera } from 'lucide-react'; // Import Camera icon
 
@@ -68,6 +68,9 @@ export default function QuantChart({ data, chartType, title, options }: QuantCha
                 timeVisible: true,
             },
             rightPriceScale: {
+                borderColor: '#27272a',
+            },
+            leftPriceScale: {
                 borderColor: '#27272a',
             }
         });
@@ -136,6 +139,22 @@ export default function QuantChart({ data, chartType, title, options }: QuantCha
                     close: d.close!
                 }));
                 series.setData(candleData as any); // Type assertion for lightweight-charts compatibility
+            } else if (chartType === 'Area') {
+                const series = chart.addSeries(AreaSeries, {
+                    lineColor: options?.lineColor || '#E84142',
+                    topColor: options?.topColor || 'rgba(232, 65, 66, 0.4)',
+                    bottomColor: options?.bottomColor || 'rgba(232, 65, 66, 0.0)',
+                    lineWidth: 2,
+                    ...(options?.autoscaleInfoProvider ? { autoscaleInfoProvider: options.autoscaleInfoProvider } : {})
+                });
+                seriesRef.current = series;
+
+                const areaData = data.map(d => ({
+                    time: d.time,
+                    value: d.value!
+                }));
+
+                series.setData(areaData as any);
             } else if (chartType === 'Line') {
                 const series = chart.addSeries(LineSeries, {
                     color: '#8b5cf6', // Violet-500
@@ -163,35 +182,110 @@ export default function QuantChart({ data, chartType, title, options }: QuantCha
                         });
                     });
                 }
+            } else if (chartType === 'Histogram') {
+                const series = chart.addSeries(HistogramSeries, {
+                    color: '#d4d4d8', // Default color, will be overridden by data
+                });
+                seriesRef.current = series;
+
+                const histogramData = data.map(d => ({
+                    time: d.time,
+                    value: d.value!,
+                    color: d.color || '#d4d4d8'
+                }));
+
+                series.setData(histogramData as any);
+
+                // Apply options like horizontal lines
+                if (options && options.horizontalLines) {
+                    options.horizontalLines.forEach((line: any) => {
+                        series.createPriceLine({
+                            price: line.value,
+                            color: line.color,
+                            lineWidth: 1,
+                            lineStyle: line.style || 2,
+                            axisLabelVisible: true,
+                            title: '',
+                        });
+                    });
+                }
             } else if (chartType === 'MultiLine') {
                 if (options && options.lines && Array.isArray(options.lines)) {
                     // Track extra series for cleanup
                     options.lines.forEach((lineConfig: any, index: number) => {
-                        const series = chart.addSeries(LineSeries, {
-                            color: lineConfig.color,
-                            lineWidth: lineConfig.lineWidth || 2,
-                            lineStyle: lineConfig.style || 1, // 1 = Solid
-                            title: lineConfig.title || '',
-                            lastValueVisible: false, // Disable horizontal extension line
-                            priceLineVisible: false,
-                        });
+                        let series: ISeriesApi<any>;
+
+                        if (lineConfig.type === 'Area') {
+                            series = chart.addSeries(AreaSeries, {
+                                priceScaleId: lineConfig.priceScaleId || 'right',
+                                lineColor: lineConfig.lineColor || lineConfig.color,
+                                topColor: lineConfig.topColor,
+                                bottomColor: lineConfig.bottomColor,
+                                lineWidth: lineConfig.lineWidth || 2,
+                                ...(lineConfig.autoscaleInfoProvider ? { autoscaleInfoProvider: lineConfig.autoscaleInfoProvider } : {})
+                            });
+                        } else if (lineConfig.type === 'Histogram') {
+                            series = chart.addSeries(HistogramSeries, {
+                                priceScaleId: lineConfig.priceScaleId || 'right',
+                                color: lineConfig.color || '#d4d4d8',
+                                priceFormat: lineConfig.priceFormat,
+                                lastValueVisible: lineConfig.lastValueVisible ?? false,
+                                priceLineVisible: lineConfig.priceLineVisible ?? false,
+                            });
+                            if (lineConfig.scaleMargins) {
+                                chart.priceScale(lineConfig.priceScaleId || 'right').applyOptions({
+                                    scaleMargins: lineConfig.scaleMargins,
+                                    visible: lineConfig.visible !== false,
+                                });
+                            }
+                        } else {
+                            series = chart.addSeries(LineSeries, {
+                                priceScaleId: lineConfig.priceScaleId || 'right',
+                                color: lineConfig.color,
+                                lineWidth: lineConfig.lineWidth || 2,
+                                lineStyle: lineConfig.style || 1, // 1 = Solid
+                                title: lineConfig.title || '',
+                                lastValueVisible: lineConfig.lastValueVisible ?? false, // Disable horizontal extension line
+                                priceLineVisible: lineConfig.priceLineVisible ?? false,
+                                crosshairMarkerVisible: lineConfig.crosshairMarkerVisible ?? true,
+                            });
+                        }
 
                         // Track in extraSeriesRef
                         extraSeriesRef.current.push(series);
 
                         // Assign the FIRST series (index 0) or specific 'price' series to seriesRef.current
-                        // enabling dynamic features like 'AVG (Zoom)' or handleDownload
-                        // Prefer 'price' key if matches, otherwise first.
                         if (lineConfig.key === 'price' || (index === 0 && !seriesRef.current)) {
                             seriesRef.current = series;
                         }
 
-                        const lineData = data.map(d => ({
-                            time: d.time,
-                            value: d[lineConfig.key] // Extract value by key
-                        }));
+                        // Filter out undefined/null values for the chart explicitly if needed
+                        const seriesData = data.map(d => {
+                            const point: any = {
+                                time: d.time,
+                                value: d[lineConfig.key]
+                            };
+                            if (lineConfig.colorKey && d[lineConfig.colorKey]) {
+                                point.color = d[lineConfig.colorKey];
+                            }
+                            return point;
+                        }).filter(d => d.value !== undefined && d.value !== null);
 
-                        series.setData(lineData as any);
+                        series.setData(seriesData as any);
+
+                        // Attach price lines if provided
+                        if (lineConfig.priceLines && Array.isArray(lineConfig.priceLines)) {
+                            lineConfig.priceLines.forEach((pl: any) => {
+                                series.createPriceLine({
+                                    price: pl.value,
+                                    color: pl.color,
+                                    lineWidth: pl.lineWidth || 1,
+                                    lineStyle: pl.lineStyle || 2,
+                                    axisLabelVisible: true,
+                                    title: pl.title || '',
+                                });
+                            });
+                        }
                     });
                 }
             }
